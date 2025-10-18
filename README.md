@@ -813,13 +813,6 @@ python Proyecto2.py
 
 ---
 
-## 📚 Referencias
-
-- **Algoritmo CYK**: J. Cocke, D. Younger, T. Kasami (1965)
-- **Forma Normal de Chomsky**: Noam Chomsky (1959)
-- **Teoría de Lenguajes Formales**: Hopcroft, Motwani, Ullman
-
----
 
 ## 👥 Autores
 
@@ -838,7 +831,6 @@ Este proyecto es material académico para el curso de Teoría de la Computación
 ## 📞 Soporte
 
 Para más información técnica sobre el algoritmo CYK, consulta:
-- **`README_CYK.md`**: Documentación técnica detallada
 - **Comentarios en el código**: Explicaciones línea por línea en `Proyecto2.py`
 
 ---
@@ -854,5 +846,5 @@ Para más información técnica sobre el algoritmo CYK, consulta:
 - ✅ **Validación completa** - Verifica sintaxis de oraciones en inglés
 
 ---
+Link al las fotos y videos: https://drive.google.com/drive/folders/1RW-71FD2HFavxTbG7sWTg_ieoMJS69yu?usp=drive_link
 
-**¡Gracias por usar el Procesador de Gramáticas Libres de Contexto!** 🎉
