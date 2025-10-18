@@ -1,5 +1,6 @@
 import re
 import sys
+import time
 from typing import Dict, Set, List, Tuple
 
 Grammar = Dict[str, Set[str]]
@@ -501,6 +502,172 @@ def convert_to_cnf(grammar: Grammar) -> Grammar:
     return grammar
 
 
+#############################
+# Validación CYK con árbol  #
+#############################
+
+TokenGrammar = Dict[str, List[List[str]]]
+
+def parse_token_grammar_line(line: str) -> Tuple[str, List[List[str]]]:
+    """
+    Parsea una línea tipo:  S -> NP VP | V NP | eats
+    Retorna (head, [ [NP,VP], [V,NP], [eats] ])
+    """
+    line = line.strip()
+    if not line or line.startswith('#'):
+        return None, []
+    if '->' in line:
+        head, rhs = line.split('->', 1)
+    elif '→' in line:
+        head, rhs = line.split('→', 1)
+    else:
+        return None, []
+    head = head.strip()
+    alts = [alt.strip() for alt in rhs.split('|') if alt.strip()]
+    prods: List[List[str]] = []
+    for alt in alts:
+        # Mantener los tokens separados por espacios
+        parts = [p.strip() for p in alt.split() if p.strip()]
+        if parts:
+            prods.append(parts)
+    return head, prods
+
+
+def load_token_grammar(path: str) -> TokenGrammar:
+    tg: TokenGrammar = {}
+    with open(path, encoding='utf-8') as f:
+        for raw in f:
+            head, prods = parse_token_grammar_line(raw)
+            if not head:
+                continue
+            if head not in tg:
+                tg[head] = []
+            tg[head].extend(prods)
+    return tg
+
+
+def build_cnf_indexes(tg: TokenGrammar) -> Tuple[Dict[str, Set[str]], Dict[Tuple[str, str], Set[str]]]:
+    """
+    Construye índices inversos para CYK:
+      - term_to_nt[terminal] -> {A | A -> terminal}
+      - pair_to_nt[(B,C)] -> {A | A -> B C}
+    """
+    term_to_nt: Dict[str, Set[str]] = {}
+    pair_to_nt: Dict[Tuple[str, str], Set[str]] = {}
+    for head, prods in tg.items():
+        for rhs in prods:
+            if len(rhs) == 1:
+                a = rhs[0]
+                # terminal si no es un no-terminal (heurística: si no aparece como cabeza)
+                term_to_nt.setdefault(a, set()).add(head)
+            elif len(rhs) == 2:
+                b, c = rhs[0], rhs[1]
+                pair_to_nt.setdefault((b, c), set()).add(head)
+            else:
+                # Si la gramática no está en CNF estricta, no indexamos reglas de >2 símbolos
+                # (CYK requiere CNF). El usuario debe proveer CNF o usar la opción de conversión.
+                pass
+    return term_to_nt, pair_to_nt
+
+
+def normalize_sentence(s: str) -> List[str]:
+    # Lowercase y remover puntuación simple pegada a palabras
+    s = s.strip().lower()
+    # Remover signos de puntuación comunes . , ; ! ?
+    s = re.sub(r"[\.,;!\?]", "", s)
+    # Colapsar espacios
+    s = re.sub(r"\s+", " ", s)
+    tokens = s.split(" ") if s else []
+    return tokens
+
+
+def cyk_validate(sentence: str, grammar_path: str = "gramatica_english.txt") -> Tuple[bool, str, float]:
+    """
+    Ejecuta CYK sobre una oración y retorna (pertenece, parse_tree_str, elapsed_seconds).
+    Nota: requiere que la gramática esté en CNF (A->a o A->BC). Las reglas con 1 token
+    se interpretan como A->a. Las de 2 tokens como A->BC.
+    """
+    start_time = time.perf_counter()
+    tg = load_token_grammar(grammar_path)
+    start_symbol = 'S' if 'S' in tg else next(iter(tg))
+    term_to_nt, pair_to_nt = build_cnf_indexes(tg)
+
+    w = normalize_sentence(sentence)
+    n = len(w)
+    if n == 0:
+        elapsed = time.perf_counter() - start_time
+        return False, "(empty input)", elapsed
+
+    # Tabla CYK: P[i][j] = set de no-terminales que generan w[i..j]
+    P: List[List[Set[str]]] = [[set() for _ in range(n)] for _ in range(n)]
+    # Backpointers: back[i][j] = dict A -> ('TERM', token) o ('BIN', k, B, C)
+    back: List[List[Dict[str, Tuple]]] = [[{} for _ in range(n)] for _ in range(n)]
+
+    # Base: longitud 1
+    for i, tok in enumerate(w):
+        nts = term_to_nt.get(tok, set())
+        for A in nts:
+            P[i][i].add(A)
+            back[i][i][A] = ('TERM', tok)
+
+    # Paso: longitudes 2..n
+    for L in range(2, n + 1):
+        for i in range(0, n - L + 1):
+            j = i + L - 1
+            for k in range(i, j):
+                left_set = P[i][k]
+                right_set = P[k + 1][j]
+                if not left_set or not right_set:
+                    continue
+                for B in left_set:
+                    for C in right_set:
+                        for A in pair_to_nt.get((B, C), set()):
+                            if A not in P[i][j]:
+                                P[i][j].add(A)
+                                back[i][j][A] = ('BIN', k, B, C)
+
+    elapsed = time.perf_counter() - start_time
+    accepted = start_symbol in P[0][n - 1]
+
+    # Reconstruir árbol
+    def build_tree(i: int, j: int, A: str) -> str:
+        node = back[i][j].get(A)
+        if not node:
+            return A  # fallback
+        kind = node[0]
+        if kind == 'TERM':
+            _, tok = node
+            return f"({A} '{tok}')"
+        else:
+            _, k, B, C = node
+            left = build_tree(i, k, B)
+            right = build_tree(k + 1, j, C)
+            return f"({A} {left} {right})"
+
+    parse_tree = ""
+    if accepted:
+        parse_tree = build_tree(0, n - 1, start_symbol)
+
+    return accepted, parse_tree, elapsed
+
+
+def cyk_validate_interactive():
+    print("\n" + "="*70)
+    print("  VALIDACIÓN DE ORACIONES (CYK)")
+    print("="*70)
+    print("Ingrese una oración en inglés (ej.: 'She eats a cake with a fork'): ")
+    sentence = input().strip()
+    ok, tree, elapsed = cyk_validate(sentence)
+    print("\nResultado:")
+    print("SÍ" if ok else "NO")
+    print(f"Tiempo: {elapsed*1000:.2f} ms")
+    if ok:
+        print("\nParse tree (estilo bracket):")
+        print(tree)
+    else:
+        print("\nNo se pudo construir un árbol de parseo (oración fuera del lenguaje).")
+
+
 def generate_sentences_from_grammar(path: str):
     """
     Genera y muestra oraciones en inglés a partir de una gramática.
@@ -644,11 +811,12 @@ def main():
     print("="*70)
     print("\n¿Qué desea hacer?\n")
     print("  1. Convertir gramática a Forma Normal de Chomsky (CNF)")
-    print("  2. Generar oraciones en inglés desde gramática")
-    print("  3. Salir")
+    print("  2. Validar oración en inglés (CYK)")
+    print("  3. Generar oraciones en inglés (demo)")
+    print("  4. Salir")
     print("\n" + "="*70)
     
-    main_choice = input("\nIngrese su opción (1, 2, o 3): ").strip()
+    main_choice = input("\nIngrese su opción (1, 2, 3 o 4): ").strip()
     
     if main_choice == "1":
         # Menú de conversión a CNF
@@ -664,7 +832,7 @@ def main():
         choice = input("\nIngrese su opción (1, 2, o 3): ").strip()
         
         if choice == "1":
-            path = "1.txt"
+            path = "gramatica_english.txt"
         elif choice == "2":
             path = "1-cnf.txt"
         elif choice == "3":
@@ -676,16 +844,20 @@ def main():
         process_cnf_conversion(path)
     
     elif main_choice == "2":
-        # Generar oraciones en inglés
-        path = "gramatica_english.txt"
-        generate_sentences_from_grammar(path)
+        # Validación CYK
+        cyk_validate_interactive()
     
     elif main_choice == "3":
+        # Generador de oraciones (demo)
+        path = "gramatica_english.txt"
+        generate_sentences_from_grammar(path)
+
+    elif main_choice == "4":
         print("\n¡Hasta luego!")
         sys.exit(0)
     
     else:
-        print("[ERROR] Opción inválida. Debe elegir 1, 2 o 3.")
+        print("[ERROR] Opción inválida. Debe elegir 1, 2, 3 o 4.")
         sys.exit(1)
 
 if __name__ == "__main__":
