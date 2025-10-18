@@ -69,25 +69,26 @@ def print_grammar(grammar: Grammar, title: str = "Gramática"):
 
 def tokenize_production(prod: str, grammar: Grammar) -> List[str]:
     """
-    Tokeniza una producción en símbolos individuales (no-terminales y terminales).
-    Los no-terminales son los que están en las claves de la gramática.
+    Tokeniza una producción usando palabras completas:
+    - Cada palabra separada por espacios es un token.
+    - Si la palabra coincide con un no-terminal de la gramática, se mantiene como tal.
+    - Si no coincide, se considera un terminal de palabra completa.
     """
     tokens = []
-    i = 0
-    while i < len(prod):
-        # Intentar hacer match con no-terminales más largos primero
-        matched = False
-        for nt in sorted(grammar.keys(), key=len, reverse=True):
-            if prod[i:i+len(nt)] == nt:
-                tokens.append(nt)
-                i += len(nt)
-                matched = True
-                break
-        if not matched:
-            # Es un terminal
-            tokens.append(prod[i])
-            i += 1
+    
+    # Dividir la producción por espacios
+    words = prod.strip().split()
+    
+    for word in words:
+        # Si es un no-terminal conocido, dejarlo tal cual
+        if word in grammar:
+            tokens.append(word)
+        else:
+            # Si no, considerarlo un terminal de palabra completa
+            tokens.append(word)
+    
     return tokens
+
 
 
 def find_nullable_with_steps(grammar: Grammar) -> Tuple[Set[str], List[str]]:
@@ -357,9 +358,38 @@ def remove_useless_symbols_with_steps(grammar: Grammar) -> Tuple[Grammar, List[s
     return new_grammar, steps
 
 
+from typing import Dict, Set, List, Tuple
+
+Grammar = Dict[str, Set[str]]
+
+def tokenize_production(prod: str, grammar: Grammar) -> List[str]:
+    """
+    Tokeniza una producción en palabras completas:
+    - Coincidencias con no-terminales se tokenizan como tal.
+    - Todo lo demás se toma como un terminal palabra completa.
+    """
+    tokens = []
+    i = 0
+    sorted_nts = sorted(grammar.keys(), key=len, reverse=True)
+
+    while i < len(prod):
+        matched = False
+        for nt in sorted_nts:
+            if prod[i:i+len(nt)] == nt:
+                tokens.append(nt)
+                i += len(nt)
+                matched = True
+                break
+        if not matched:
+            # Tomar toda la "palabra" restante como terminal
+            tokens.append(prod[i:])
+            break
+    return tokens
+
+
 def convert_to_cnf_with_steps(grammar: Grammar) -> Tuple[Grammar, List[str]]:
     """
-    Convierte la gramática a Forma Normal de Chomsky (CNF).
+    Convierte la gramática a Forma Normal de Chomsky (CNF) por palabras completas.
     Forma CNF: A -> a  o  A -> BC
     Retorna (nueva_gramática, pasos).
     """
@@ -372,109 +402,67 @@ def convert_to_cnf_with_steps(grammar: Grammar) -> Tuple[Grammar, List[str]]:
     
     # Paso 1: Crear producciones para terminales (A -> a)
     steps.append("\n-- Paso 1: Creando no-terminales para terminales --")
+    
+    # Recorrer todas las producciones
     for head, prods in grammar.items():
         for prod in prods:
             if prod == "ε":
                 continue
-            for symbol in prod:
-                # Es terminal si es minúscula, dígito o caracter especial
-                if (symbol.islower() or symbol.isdigit() or symbol in '()+-*/') and symbol not in terminal_map:
-                    # Crear nombre apropiado para el no-terminal
-                    if symbol == '(':
-                        new_nt = "L"  # Left parenthesis
-                    elif symbol == ')':
-                        new_nt = "R"  # Right parenthesis
-                    elif symbol == '+':
-                        new_nt = "P"  # Plus
-                    elif symbol == '*':
-                        new_nt = "M"  # Multiply
-                    elif symbol == '-':
-                        new_nt = "MINUS"
-                    elif symbol == '/':
-                        new_nt = "DIV"
-                    else:
-                        new_nt = f"T{symbol}"
-                    terminal_map[symbol] = new_nt
-                    steps.append(f"  Terminal '{symbol}' -> nuevo no-terminal '{new_nt}'")
-    
-    # Agregar producciones de terminales al nuevo grammar
-    for terminal, nt in terminal_map.items():
-        if nt not in new_grammar:
-            new_grammar[nt] = set()
-        new_grammar[nt].add(terminal)
+            # Tokenizar por palabras completas
+            symbols = tokenize_production(prod, grammar)
+            for s in symbols:
+                if s not in grammar and s not in terminal_map:  # palabra terminal
+                    nt_name = f"T{s}"
+                    terminal_map[s] = nt_name
+                    new_grammar[nt_name] = {s}
+                    steps.append(f"  Terminal '{s}' -> nuevo no-terminal '{nt_name}'")
     
     # Paso 2: Convertir producciones a CNF
     steps.append("\n-- Paso 2: Convirtiendo producciones a forma CNF --")
     
+    aux_counter = [1]
     for head, prods in grammar.items():
         steps.append(f"\nProcesando {head}:")
-        for prod in sorted(prods):
+        for prod in prods:
             if prod == "ε":
-                # Mantener epsilon solo si es del símbolo inicial
-                start_symbol = next(iter(grammar.keys()))
-                if head == start_symbol:
-                    new_grammar[head].add(prod)
-                    steps.append(f"  {head} -> ε (símbolo inicial, se mantiene)")
-                else:
-                    steps.append(f"  {head} -> ε (ignorada, no es inicial)")
+                steps.append(f"  {head} -> ε (omitido, no inicial)")
                 continue
             
-            # Producción de un solo símbolo
-            if len(prod) == 1:
-                if prod.islower() or prod.isdigit() or prod in '()+-*/':
-                    # Terminal: ya está en CNF
-                    new_grammar[head].add(prod)
-                    steps.append(f"  {head} -> {prod} (terminal, ya en CNF)")
-                else:
-                    # No-terminal: producción unitaria (ya debería estar eliminada)
-                    new_grammar[head].add(prod)
-                    steps.append(f"  {head} -> {prod} (no-terminal único)")
-                continue
-            
-            # Producción de dos o más símbolos
-            symbols = list(prod)
+            symbols = tokenize_production(prod, grammar)
             
             # Reemplazar terminales por sus no-terminales
             new_symbols = []
             for s in symbols:
-                if s.islower() or s.isdigit() or s in '()+-*/':
+                if s in terminal_map:
                     new_symbols.append(terminal_map[s])
                 else:
                     new_symbols.append(s)
             
             steps.append(f"  {head} -> {prod}")
             if new_symbols != symbols:
-                steps.append(f"    Reemplazando terminales: {''.join(new_symbols)}")
+                steps.append(f"    Reemplazando terminales: {' '.join(new_symbols)}")
             
             # Si tiene exactamente 2 símbolos, ya está en CNF
-            if len(new_symbols) == 2:
-                new_prod = "".join(new_symbols)
-                new_grammar[head].add(new_prod)
-                steps.append(f"    {head} -> {new_prod} (CNF: dos no-terminales)")
+            if len(new_symbols) == 1:
+                new_grammar[head].add(new_symbols[0])
+                steps.append(f"    {head} -> {new_symbols[0]} (CNF: terminal o no-terminal único)")
+            elif len(new_symbols) == 2:
+                new_grammar[head].add(" ".join(new_symbols))
+                steps.append(f"    {head} -> {' '.join(new_symbols)} (CNF: dos no-terminales)")
             else:
                 # Más de 2 símbolos: introducir variables auxiliares
-                # A -> B1 B2 B3 ... Bn  se convierte en:
-                # A -> B1 X1
-                # X1 -> B2 X2
-                # X2 -> B3 X3
-                # ...
-                # Xn-2 -> Bn-1 Bn
-                
                 current_head = head
                 for i in range(len(new_symbols) - 2):
                     aux_var = f"X{aux_counter[0]}"
                     aux_counter[0] += 1
-                    
-                    new_prod = new_symbols[i] + aux_var
+                    new_prod = f"{new_symbols[i]} {aux_var}"
                     new_grammar[current_head].add(new_prod)
                     steps.append(f"    {current_head} -> {new_prod} (aux)")
-                    
                     if aux_var not in new_grammar:
                         new_grammar[aux_var] = set()
                     current_head = aux_var
-                
                 # Última producción
-                final_prod = new_symbols[-2] + new_symbols[-1]
+                final_prod = f"{new_symbols[-2]} {new_symbols[-1]}"
                 new_grammar[current_head].add(final_prod)
                 steps.append(f"    {current_head} -> {final_prod} (final)")
     
